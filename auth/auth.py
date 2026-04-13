@@ -98,16 +98,16 @@ def login_page():
 
     /* ── Welcome text ── */
     .login-welcome {
-        font-size: 20px;
-        font-weight: 700;
-        color: #ffffff;
-        margin-bottom: 4px;
-        letter-spacing: -0.3px;
+        font-size: 14px;
+        font-weight: 600;
+        color: rgba(255,255,255,0.75);
+        margin-bottom: 2px;
+        letter-spacing: -0.1px;
     }
     .login-sub {
-        font-size: 13px;
-        color: rgba(255,255,255,0.38);
-        margin-bottom: 28px;
+        font-size: 11px;
+        color: rgba(255,255,255,0.28);
+        margin-bottom: 20px;
     }
 
     /* ── Form inputs ── */
