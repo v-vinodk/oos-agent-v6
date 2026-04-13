@@ -15,52 +15,58 @@ def is_authenticated(): return st.session_state.get("authenticated", False)
 def logout():
     for k in ["authenticated","username","user_name","user_role"]: st.session_state.pop(k, None)
 
+# noon logo SVG — yellow wordmark
+_NOON_LOGO = """<svg width="80" height="30" viewBox="0 0 80 30" xmlns="http://www.w3.org/2000/svg">
+  <text x="1" y="25" font-family="'Arial Black',Arial,sans-serif"
+        font-weight="900" font-size="27" fill="#FFCE00" letter-spacing="-0.5">noon</text>
+</svg>"""
+
 def login_page():
     st.markdown("""
     <style>
     [data-testid="stSidebar"]{display:none}
     #MainMenu,footer,header{visibility:hidden}
     [data-testid="stAppViewContainer"]>.main{
-        background: linear-gradient(135deg,#0f0c29 0%,#302b63 50%,#24243e 100%);
+        background:linear-gradient(135deg,#111111 0%,#1A1A1A 50%,#111111 100%);
         min-height:100vh;
     }
     .lcard{
-        background:rgba(255,255,255,0.05);
+        background:rgba(255,255,255,0.04);
         backdrop-filter:blur(20px);
-        border:1px solid rgba(255,255,255,0.12);
+        border:1px solid rgba(255,206,0,0.18);
         border-radius:20px;
         padding:44px 48px 36px;
     }
     .lbadge{
         display:inline-flex;align-items:center;gap:8px;
-        background:rgba(99,102,241,0.2);border:1px solid rgba(99,102,241,0.4);
-        border-radius:20px;padding:4px 14px;font-size:11px;color:#a5b4fc;
+        background:rgba(255,206,0,0.12);border:1px solid rgba(255,206,0,0.28);
+        border-radius:20px;padding:4px 14px;font-size:11px;color:#FFCE00;
         margin-bottom:20px;letter-spacing:0.04em;
     }
-    .ltitle{font-size:28px;font-weight:800;color:#fff;margin-bottom:6px;letter-spacing:-0.5px}
-    .lsub{font-size:13px;color:rgba(255,255,255,0.55);margin-bottom:32px}
+    .ltitle{font-size:26px;font-weight:800;color:#fff;margin-bottom:6px;letter-spacing:-0.5px}
+    .lsub{font-size:13px;color:rgba(255,255,255,0.45);margin-bottom:32px}
     .lcreds{
-        background:rgba(99,102,241,0.1);border:1px solid rgba(99,102,241,0.25);
+        background:rgba(255,206,0,0.07);
+        border:1px solid rgba(255,206,0,0.18);
         border-radius:10px;padding:14px 16px;font-size:12px;
-        color:rgba(255,255,255,0.6);margin-top:16px;line-height:2;
+        color:rgba(255,255,255,0.55);margin-top:16px;line-height:2;
     }
-    .lcreds strong{color:#a5b4fc}
-    /* Override Streamlit form inputs for dark bg */
+    .lcreds strong{color:#FFCE00}
     [data-testid="stForm"] input{
-        background:rgba(255,255,255,0.07) !important;
-        border:1px solid rgba(255,255,255,0.15) !important;
-        color:#fff !important; border-radius:10px !important;
+        background:rgba(255,255,255,0.06) !important;
+        border:1px solid rgba(255,255,255,0.12) !important;
+        color:#fff !important;border-radius:10px !important;
     }
     [data-testid="stForm"] input:focus{
-        border-color:#6366f1 !important;
-        box-shadow:0 0 0 3px rgba(99,102,241,0.2) !important;
+        border-color:#FFCE00 !important;
+        box-shadow:0 0 0 3px rgba(255,206,0,0.15) !important;
     }
-    [data-testid="stForm"] label{color:rgba(255,255,255,0.7) !important;font-size:13px !important}
+    [data-testid="stForm"] label{color:rgba(255,255,255,0.65) !important;font-size:13px !important}
     [data-testid="stFormSubmitButton"]>button{
-        background:linear-gradient(135deg,#6366f1,#8b5cf6) !important;
+        background:linear-gradient(135deg,#FFCE00,#e6b800) !important;
         border:none !important;border-radius:10px !important;
-        font-weight:600 !important;font-size:14px !important;
-        color:#fff !important;padding:10px !important;
+        font-weight:700 !important;font-size:14px !important;
+        color:#1A1A1A !important;padding:10px !important;
         transition:opacity .2s !important;
     }
     [data-testid="stFormSubmitButton"]>button:hover{opacity:.88 !important}
@@ -70,11 +76,12 @@ def login_page():
     st.markdown("<div style='height:60px'></div>", unsafe_allow_html=True)
     _, col, _ = st.columns([1.2, 2, 1.2])
     with col:
-        st.markdown("""
+        st.markdown(f"""
         <div class="lcard">
-          <div class="lbadge">⬡ &nbsp;AI-Powered Analytics</div>
-          <div class="ltitle">noon OOS Agent</div>
-          <div class="lsub">Out-of-Stock Intelligence — powered by Claude AI &amp; BigQuery</div>
+          <div style="margin-bottom:14px">{_NOON_LOGO}</div>
+          <div class="lbadge">📦 &nbsp;OOS Intelligence Platform</div>
+          <div class="ltitle">Out-of-Stock Agent</div>
+          <div class="lsub">Powered by Claude AI · Electronics, Fashion, Home &amp; Beauty</div>
         </div>
         """, unsafe_allow_html=True)
 
