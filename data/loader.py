@@ -79,7 +79,7 @@ def get_history_df() -> pd.DataFrame:
     """Daily aggregated history for trend charts."""
     df = _load_raw()
     agg = df.groupby("date").apply(lambda g: pd.Series({
-        "date":         g["date"].iloc[0].strftime("%Y-%m-%d"),
+        "date":         g.name.strftime("%Y-%m-%d"),
         "region":       "AE",
         "oos_count":    int((g["stock_available"] == 0).sum()),
         "oos_rate":     round((g["stock_available"] == 0).mean(), 4),
@@ -88,7 +88,7 @@ def get_history_df() -> pd.DataFrame:
         ),
         "actioned":   0,
         "unactioned": 0,
-    })).reset_index(drop=True)
+    }), include_groups=False).reset_index(drop=True)
     return agg.sort_values("date").reset_index(drop=True)
 
 
