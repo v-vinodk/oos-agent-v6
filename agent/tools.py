@@ -1,17 +1,30 @@
 """
 Agent tools — exact columns: stock_available, daily_sales, price,
 brand, category, supplier_lead_time, stock_incoming, days_of_supply, gmv_daily
+
+Key design:
+  • Snapshot tools  (get_oos_skus, get_gmv_loss, get_root_cause_breakdown,
+                     get_category_summary, get_brand_analysis, get_at_risk_skus)
+    → use get_inventory_df()  = latest date in CSV only
+    → answer "right now / today" questions
+
+  • Historical tools (get_oos_trend, get_historical_oos_events)
+    → use _load_raw()  = all rows across all dates
+    → always anchored to the CSV's own max date (never datetime.now())
+    → answer "last N days / trend / which SKUs were OOS" questions
 """
-import json
 import pandas as pd
-from data.loader import get_inventory_df, get_history_df
+from data.loader import get_inventory_df, _load_raw
 
 
 def _safe_str(val) -> str:
     return str(val) if val is not None else ""
 
 
+# ── Snapshot tools ─────────────────────────────────────────────────────────────
+
 def get_oos_skus(category=None, brand=None, days_of_supply_threshold=0, limit=20):
+    """Returns SKUs OOS or critically low as of the latest date in the dataset."""
     df = get_inventory_df().copy()
     if category:
         df = df[df["category"].str.lower() == category.lower()]
@@ -28,6 +41,7 @@ def get_oos_skus(category=None, brand=None, days_of_supply_threshold=0, limit=20
 
 
 def get_gmv_loss(category=None, brand=None):
+    """Calculates daily GMV loss from OOS as of the latest date."""
     df = get_inventory_df().copy()
     if category:
         df = df[df["category"].str.lower() == category.lower()]
@@ -56,6 +70,7 @@ def get_gmv_loss(category=None, brand=None):
 
 
 def get_root_cause_breakdown(category=None, brand=None):
+    """Root cause analysis of current OOS events (supplier_delay / no_inbound_stock / replenishment_lag)."""
     df = get_inventory_df().copy()
     if category:
         df = df[df["category"].str.lower() == category.lower()]
@@ -94,28 +109,8 @@ def get_root_cause_breakdown(category=None, brand=None):
     }
 
 
-def get_oos_trend(days=7):
-    import datetime
-    df = get_history_df().copy()
-    if df.empty:
-        return {"error": "No history data available"}
-    cutoff = (datetime.datetime.now() - datetime.timedelta(days=int(days))).strftime("%Y-%m-%d")
-    df = df[df["date"] >= cutoff].sort_values("date")
-    if df.empty:
-        return {"error": f"No trend data for last {days} days"}
-    first_rate = float(df["oos_rate"].iloc[0])
-    last_rate  = float(df["oos_rate"].iloc[-1])
-    trend_dir  = "improving" if last_rate < first_rate else "worsening"
-    return {
-        "trend_direction": trend_dir,
-        "period_days": int(days),
-        "avg_daily_lost_gmv_aed": round(float(df["lost_gmv_aed"].mean()), 2),
-        "avg_oos_rate_pct": round(float(df["oos_rate"].mean()) * 100, 2),
-        "daily_data": df[["date","oos_count","oos_rate","lost_gmv_aed"]].to_dict("records"),
-    }
-
-
 def get_at_risk_skus(days_threshold=7, category=None):
+    """SKUs projected to go OOS within N days (days_of_supply ≤ threshold, but > 0)."""
     df = get_inventory_df().copy()
     if category:
         df = df[df["category"].str.lower() == category.lower()]
@@ -139,6 +134,7 @@ def get_at_risk_skus(days_threshold=7, category=None):
 
 
 def get_category_summary(category=None):
+    """OOS rate, GMV loss and avg days of supply per category (current snapshot)."""
     df = get_inventory_df().copy()
     if category:
         df = df[df["category"].str.lower() == category.lower()]
@@ -161,6 +157,7 @@ def get_category_summary(category=None):
 
 
 def get_brand_analysis(category=None, top_n=10):
+    """Top brands by OOS GMV loss (current snapshot)."""
     df = get_inventory_df().copy()
     if category:
         df = df[df["category"].str.lower() == category.lower()]
@@ -178,60 +175,238 @@ def get_brand_analysis(category=None, top_n=10):
     return {"brands": result, "total_oos_brands": int(oos["brand"].nunique())}
 
 
+# ── Historical tools ───────────────────────────────────────────────────────────
+
+def get_oos_trend(days=14):
+    """
+    OOS rate and GMV loss trend over the last N days.
+    Anchored to the CSV's own max date — never the server clock.
+    Use for 'is OOS getting better or worse?' trend questions.
+    """
+    df = _load_raw().copy()
+    if df.empty:
+        return {"error": "No history data available"}
+
+    # Anchor to the data's own max date (not datetime.now())
+    max_date = pd.to_datetime(df["date"]).max()
+    cutoff   = max_date - pd.Timedelta(days=int(days) - 1)
+
+    window = df[df["date"] >= cutoff].copy()
+    if window.empty:
+        return {"error": f"No data found in last {days} days of the dataset"}
+
+    # Aggregate per day
+    agg = (
+        window.groupby("date")
+        .apply(lambda g: pd.Series({
+            "date":         g.name.strftime("%Y-%m-%d"),
+            "oos_count":    int((g["stock_available"] == 0).sum()),
+            "oos_rate":     round((g["stock_available"] == 0).mean(), 4),
+            "lost_gmv_aed": round(g.loc[g["stock_available"] == 0, "gmv_daily"].sum(), 2),
+        }), include_groups=False)
+        .reset_index(drop=True)
+        .sort_values("date")
+    )
+
+    first_rate = float(agg["oos_rate"].iloc[0])
+    last_rate  = float(agg["oos_rate"].iloc[-1])
+    trend_dir  = "improving" if last_rate < first_rate else "worsening"
+
+    return {
+        "trend_direction":       trend_dir,
+        "period_days":           int(days),
+        "data_up_to":            max_date.strftime("%Y-%m-%d"),
+        "avg_daily_lost_gmv_aed": round(float(agg["lost_gmv_aed"].mean()), 2),
+        "total_lost_gmv_aed":    round(float(agg["lost_gmv_aed"].sum()), 2),
+        "avg_oos_rate_pct":      round(float(agg["oos_rate"].mean()) * 100, 2),
+        "peak_oos_count":        int(agg["oos_count"].max()),
+        "daily_data":            agg[["date","oos_count","oos_rate","lost_gmv_aed"]].to_dict("records"),
+    }
+
+
+def get_historical_oos_events(days=14, category=None, brand=None):
+    """
+    Scans ALL rows (not just today's snapshot) across the last N days and returns
+    every SKU×date combination where stock_available = 0.
+    Use for questions like:
+      • 'Which SKUs were OOS in the last 14 days?'
+      • 'How many days was Apple OOS this month?'
+      • 'Show me the OOS history for Electronics'
+      • 'What was the cumulative GMV lost over the past 2 weeks?'
+    Always anchored to the CSV's own max date.
+    """
+    df = _load_raw().copy()
+    if df.empty:
+        return {"error": "No data available"}
+
+    # Anchor window to CSV's own max date
+    max_date = pd.to_datetime(df["date"]).max()
+    cutoff   = max_date - pd.Timedelta(days=int(days) - 1)
+    window   = df[df["date"] >= cutoff].copy()
+
+    # Optional filters
+    if category:
+        window = window[window["category"].str.lower() == category.lower()]
+    if brand:
+        window = window[window["brand"].str.lower().str.contains(brand.lower(), na=False)]
+
+    oos_rows = window[window["stock_available"] == 0].copy()
+
+    if oos_rows.empty:
+        return {
+            "total_oos_events": 0,
+            "unique_oos_skus": 0,
+            "cumulative_gmv_loss_aed": 0,
+            "period_days": int(days),
+            "data_up_to": max_date.strftime("%Y-%m-%d"),
+            "oos_events": [],
+            "summary_by_sku": [],
+        }
+
+    # Per-SKU summary: how many days OOS + total GMV lost
+    sku_summary = (
+        oos_rows.groupby(["sku_id","brand","category"])
+        .agg(
+            days_oos=("date", "count"),
+            total_gmv_loss_aed=("gmv_daily", "sum"),
+            first_oos_date=("date", "min"),
+            last_oos_date=("date",  "max"),
+        )
+        .reset_index()
+    )
+    sku_summary["total_gmv_loss_aed"] = sku_summary["total_gmv_loss_aed"].round(2)
+    sku_summary["first_oos_date"] = sku_summary["first_oos_date"].dt.strftime("%Y-%m-%d")
+    sku_summary["last_oos_date"]  = sku_summary["last_oos_date"].dt.strftime("%Y-%m-%d")
+    sku_summary = sku_summary.sort_values("total_gmv_loss_aed", ascending=False)
+
+    # Detailed event rows
+    event_cols = [c for c in ["date","sku_id","brand","category",
+                               "stock_available","stock_incoming",
+                               "days_of_supply","gmv_daily","root_cause"]
+                  if c in oos_rows.columns]
+    events = oos_rows[event_cols].copy()
+    events["date"] = events["date"].dt.strftime("%Y-%m-%d")
+    events = events.sort_values(["date","gmv_daily"], ascending=[True, False])
+
+    return {
+        "period_days":              int(days),
+        "data_up_to":               max_date.strftime("%Y-%m-%d"),
+        "total_oos_events":         int(len(oos_rows)),
+        "unique_oos_skus":          int(oos_rows["sku_id"].nunique()),
+        "cumulative_gmv_loss_aed":  round(float(oos_rows["gmv_daily"].sum()), 2),
+        "avg_daily_gmv_loss_aed":   round(float(oos_rows["gmv_daily"].sum()) / int(days), 2),
+        "summary_by_sku":           sku_summary.to_dict("records"),
+        "oos_events":               events.head(50).to_dict("records"),
+    }
+
+
 # ── Tool schemas ──────────────────────────────────────────────────────────────
 TOOL_DEFINITIONS = [
-    {"name": "get_oos_skus",
-     "description": "Returns SKUs currently OOS or below a days-of-supply threshold. Filter by category or brand.",
-     "input_schema": {"type": "object", "properties": {
-         "category":               {"type": "string", "description": "Product category"},
-         "brand":                  {"type": "string", "description": "Brand name"},
-         "days_of_supply_threshold": {"type": "number", "default": 0},
-         "limit":                  {"type": "integer", "default": 20},
-     }}},
-    {"name": "get_gmv_loss",
-     "description": "Calculates daily GMV loss from OOS, broken down by category and brand.",
-     "input_schema": {"type": "object", "properties": {
-         "category": {"type": "string"},
-         "brand":    {"type": "string"},
-     }}},
-    {"name": "get_root_cause_breakdown",
-     "description": "Root cause analysis of OOS using supplier_lead_time and stock_incoming. Use for 'why' questions.",
-     "input_schema": {"type": "object", "properties": {
-         "category": {"type": "string"},
-         "brand":    {"type": "string"},
-     }}},
-    {"name": "get_oos_trend",
-     "description": "OOS rate and GMV loss trend over N days. Use for better/worse/trend questions.",
-     "input_schema": {"type": "object", "properties": {
-         "days": {"type": "integer", "default": 7},
-     }}},
-    {"name": "get_at_risk_skus",
-     "description": "SKUs projected to go OOS within N days. Flags where days_of_supply < supplier_lead_time.",
-     "input_schema": {"type": "object", "properties": {
-         "days_threshold": {"type": "integer", "default": 7},
-         "category":       {"type": "string"},
-     }}},
-    {"name": "get_category_summary",
-     "description": "OOS rate, GMV loss, avg days of supply per category. For category comparison questions.",
-     "input_schema": {"type": "object", "properties": {
-         "category": {"type": "string"},
-     }}},
-    {"name": "get_brand_analysis",
-     "description": "Top brands by OOS GMV loss. For brand-level questions.",
-     "input_schema": {"type": "object", "properties": {
-         "category": {"type": "string"},
-         "top_n":    {"type": "integer", "default": 10},
-     }}},
+    {
+        "name": "get_oos_skus",
+        "description": (
+            "Returns SKUs that are currently OOS (stock_available=0) or below a "
+            "days-of-supply threshold AS OF TODAY (the latest date in the dataset). "
+            "Filter by category or brand. Use for 'what is OOS right now' questions."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "category":                 {"type": "string", "description": "Product category (e.g. Electronics, Fashion, Home, Beauty)"},
+            "brand":                    {"type": "string", "description": "Brand name (e.g. Apple, Samsung, Nike)"},
+            "days_of_supply_threshold": {"type": "number",  "default": 0,  "description": "Include SKUs with days_of_supply <= this value. 0 = strictly OOS only."},
+            "limit":                    {"type": "integer", "default": 20},
+        }}
+    },
+    {
+        "name": "get_gmv_loss",
+        "description": (
+            "Calculates CURRENT daily GMV loss from OOS SKUs (today's snapshot). "
+            "Breaks down by category and brand. For 'how much revenue are we losing today' questions."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "category": {"type": "string"},
+            "brand":    {"type": "string"},
+        }}
+    },
+    {
+        "name": "get_root_cause_breakdown",
+        "description": (
+            "Root cause analysis of CURRENT OOS events. Classifies each OOS SKU as: "
+            "supplier_delay (lead_time>14d), no_inbound_stock, or replenishment_lag. "
+            "Use for 'why are SKUs OOS' questions."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "category": {"type": "string"},
+            "brand":    {"type": "string"},
+        }}
+    },
+    {
+        "name": "get_oos_trend",
+        "description": (
+            "OOS rate and GMV loss TREND over the last N days (default 14). "
+            "Scans all historical rows — anchored to the CSV's own max date, not the server clock. "
+            "Use for 'is OOS getting better or worse', 'show me the trend', '14-day GMV loss' questions."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "days": {"type": "integer", "default": 14, "description": "Number of days to look back from the dataset's latest date"},
+        }}
+    },
+    {
+        "name": "get_historical_oos_events",
+        "description": (
+            "Scans ALL historical rows across the last N days and returns every SKU×date "
+            "combination where stock_available=0. Anchored to the CSV's own max date. "
+            "Use for: 'which SKUs were OOS in the last 14 days', 'how many days was X OOS', "
+            "'cumulative GMV lost over past 2 weeks', 'OOS history for a brand/category'."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "days":     {"type": "integer", "default": 14, "description": "Number of days to look back"},
+            "category": {"type": "string",  "description": "Filter by category"},
+            "brand":    {"type": "string",  "description": "Filter by brand"},
+        }}
+    },
+    {
+        "name": "get_at_risk_skus",
+        "description": (
+            "SKUs projected to go OOS within N days (days_of_supply > 0 but ≤ threshold). "
+            "Flags SKUs where days_of_supply < supplier_lead_time (will go OOS before restock arrives)."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "days_threshold": {"type": "integer", "default": 7},
+            "category":       {"type": "string"},
+        }}
+    },
+    {
+        "name": "get_category_summary",
+        "description": (
+            "OOS rate, GMV loss, avg days of supply per category (current snapshot). "
+            "For category comparison questions."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "category": {"type": "string"},
+        }}
+    },
+    {
+        "name": "get_brand_analysis",
+        "description": (
+            "Top brands by OOS GMV loss (current snapshot). "
+            "For brand-level comparison questions like Apple vs Samsung vs Sony."
+        ),
+        "input_schema": {"type": "object", "properties": {
+            "category": {"type": "string"},
+            "top_n":    {"type": "integer", "default": 10},
+        }}
+    },
 ]
 
 TOOL_MAP = {
-    "get_oos_skus":            get_oos_skus,
-    "get_gmv_loss":            get_gmv_loss,
-    "get_root_cause_breakdown": get_root_cause_breakdown,
-    "get_oos_trend":           get_oos_trend,
-    "get_at_risk_skus":        get_at_risk_skus,
-    "get_category_summary":    get_category_summary,
-    "get_brand_analysis":      get_brand_analysis,
+    "get_oos_skus":               get_oos_skus,
+    "get_gmv_loss":               get_gmv_loss,
+    "get_root_cause_breakdown":   get_root_cause_breakdown,
+    "get_oos_trend":              get_oos_trend,
+    "get_historical_oos_events":  get_historical_oos_events,
+    "get_at_risk_skus":           get_at_risk_skus,
+    "get_category_summary":       get_category_summary,
+    "get_brand_analysis":         get_brand_analysis,
 }
 
 
@@ -240,9 +415,8 @@ def execute_tool(name: str, inputs: dict) -> dict:
     if not fn:
         return {"error": f"Unknown tool: {name}"}
     try:
-        # Only pass kwargs the function actually accepts
         import inspect
-        sig = inspect.signature(fn)
+        sig   = inspect.signature(fn)
         valid = {k: v for k, v in inputs.items() if k in sig.parameters}
         return fn(**valid)
     except Exception as e:
